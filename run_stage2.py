@@ -18,8 +18,7 @@ from Diffusion import finetuned_RibonanzaNet
 from scipy.stats import norm
 import numpy as np
 import matplotlib.pyplot as plt
-import plotly.graph_objects as go
-import numpy as np
+
 
 
 import sys
@@ -32,7 +31,7 @@ import argparse
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--config', type=str, default="diffusion_config.yaml", help='Path to config.py')
+parser.add_argument('--config', type=str, default="stage2.yaml", help='Path to config.py')
 args = parser.parse_args()
 
 
@@ -53,9 +52,9 @@ os.system('mkdir weights')
 
 
 #set seed for everything
-torch.manual_seed(0)
-np.random.seed(0)
-random.seed(0)
+# torch.manual_seed(0)
+# np.random.seed(0)
+# random.seed(0)
 
 
 # # Config
@@ -68,16 +67,16 @@ config=load_config_from_yaml(args.config)
 
 model=finetuned_RibonanzaNet(load_config_from_yaml("pairwise.yaml"),config,pretrained=True)#.cuda()
 
-# state_dict=torch.load("weights/config_003.yaml_RibonanzaNet_3D.pt",map_location='cpu')
-# #state_dict=torch.load("RibonanzaNet-3D-v2.pt",map_location='cpu')
+state_dict=torch.load("weights/config_003.yaml_RibonanzaNet_3D_final.pt",map_location='cpu')
+#state_dict=torch.load("RibonanzaNet-3D-v2.pt",map_location='cpu')
 
-# #get rid of module. from ddp state dict
-# new_state_dict={}
+#get rid of module. from ddp state dict
+new_state_dict={}
 
-# for key in state_dict:
-#     new_state_dict[key[7:]]=state_dict[key]
+for key in state_dict:
+    new_state_dict[key[7:]]=state_dict[key]
 
-# model.load_state_dict(new_state_dict)
+model.load_state_dict(new_state_dict)
 
 
 #save to pickle
@@ -97,7 +96,6 @@ test_cutoff_date = pd.Timestamp(config.test_cutoff_date)
 train_index = [i for i, d in enumerate(data['temporal_cutoff']) if pd.Timestamp(d) <= cutoff_date]
 test_index = [i for i, d in enumerate(data['temporal_cutoff']) if pd.Timestamp(d) > cutoff_date and pd.Timestamp(d) <= test_cutoff_date]
 
-train_lengths = [len(data['sequence'][i]) for i in train_index]
 val_lengths=[len(data['sequence'][i]) for i in test_index]
 
 test_index= [val_lengths[i] for i in np.argsort(val_lengths)]
@@ -114,7 +112,7 @@ print(f"Test size: {len(test_index)}")
 # In[12]:
 
 
-from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+from torch.utils.data import Dataset, DataLoader
 from ast import literal_eval
 
 def get_ct(bp,s):
@@ -188,18 +186,17 @@ val_dataset=RNA3D_Dataset(test_index,data)
 # In[14]:
 
 
-
+import plotly.graph_objects as go
+import numpy as np
 
 
 
 
 
 # In[15]:
-weights = np.array(train_lengths).clip(256,768)
-sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
 
 
-train_loader=DataLoader(train_dataset,batch_size=config.batch_size,sampler=sampler, shuffle=False)
+train_loader=DataLoader(train_dataset,batch_size=config.batch_size,shuffle=True)
 val_loader=DataLoader(val_dataset,batch_size=config.batch_size,shuffle=False)
 
 
@@ -243,22 +240,17 @@ if len(args.config.split("/"))>1:
 else:
     prefix = args.config
 
-logger=CSVLogger(["epoch","train_loss","val_loss","val_rmsd","val_lddt"],f"logs/{prefix}_log.csv")
+logger=CSVLogger(["epoch","train_loss","val_loss","val_rmsd","val_lddt"],f"logs/{prefix}_stage2_log.csv")
+
+schedule=torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=(config.epochs-config.cos_epoch)*len(train_loader)//config.batch_size)
+
+warmup_schedule=LinearWarmupScheduler(optimizer, len(train_loader), config.learning_rate)
 
 from accelerate import Accelerator
 from accelerate import DistributedDataParallelKwargs 
 
 ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-accelerator = Accelerator(kwargs_handlers=[ddp_kwargs],mixed_precision=config.mixed_precision)
-
-
-schedule=torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=(config.epochs-config.cos_epoch)*len(train_loader)//config.batch_size)
-
-warmup_schedule=LinearWarmupScheduler(optimizer=optimizer,
-                                    total_steps=config.warmup_steps*accelerator.num_processes,
-                                    final_lr=config.learning_rate)
-
-
+accelerator = Accelerator(kwargs_handlers=[ddp_kwargs],mixed_precision='bf16')
 
 def normal_pdf(x: torch.Tensor,
                mean: float = 0.0,
@@ -302,15 +294,16 @@ def get_sample_pdf(gt_xyz):
 sqrt_alpha_bars=model.sqrt_alpha_bars
 data_std=model.data_std
 
+#model=torch.compile(model)
+
 model, optimizer, train_loader, val_loader, schedule, warmup_schedule = \
 accelerator.prepare(model, optimizer, train_loader, val_loader, schedule, warmup_schedule)
 #diffusion = accelerator.prepare(diffusion)
-#config.warmup_steps=config.warmup_steps//(accelerator.num_processes)
+
 best_val_loss=99999999999
 # x = np.linspace(-2, 2, config.n_times)
 # pdf_vals = norm.pdf(x, loc=0, scale=1)
 # pdf_vals = torch.tensor(pdf_vals).float()
-total_steps=0
 for epoch in range(config.epochs):
     model.train()
     tbar=tqdm(train_loader)
@@ -350,14 +343,9 @@ for epoch in range(config.epochs):
         else:
             noised_xyz, noise=model.module.make_noisy(gt_xyz, time_steps)
 
-        N_cycle=np.random.randint(1,config.max_cycles+1)
-        #print(N_cycle)
-        if accelerator.distributed_type!='NO':
-            N_cycle=accelerator.gather(torch.tensor(N_cycle).cuda())[0].item()
-
         #exit()
         with accelerator.autocast():
-            pred_noise,distogram_pred=model(sequence,noised_xyz,time_steps,N_cycle)#.squeeze()
+            pred_noise,distogram_pred=model(sequence,noised_xyz,time_steps)#.squeeze()
         #pred_xyz=aug_xyz[:,1:-1]+pred_displacements[:,1:-1]
         #exit()
 
@@ -376,7 +364,7 @@ for epoch in range(config.epochs):
         
         #(loss/batch_size*len(gt_xyz)).backward()
 
-        accelerator.backward((loss+config.distogram_weight*distogram_loss)/config.batch_size*len(gt_xyz)**config.loss_power_scale/(100**config.loss_power_scale))
+        accelerator.backward((loss+config.distogram_weight*distogram_loss)/config.batch_size*len(gt_xyz)**config.loss_power_scale)
 
         if (idx+1)%config.batch_size==0 or idx+1 == len(tbar):
 
@@ -389,15 +377,11 @@ for epoch in range(config.epochs):
             # torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
             # scaler.step(optimizer)
             # scaler.update()
-            if total_steps<config.warmup_steps:
+            if epoch==0:
                 warmup_schedule.step()
             
-            lr=optimizer.param_groups[0]['lr']
-            print(total_steps,lr)
-
             if (epoch+1)>config.cos_epoch:
                 schedule.step()
-            total_steps+=1
         #schedule.step()
         total_loss+=loss.item()
         
@@ -424,9 +408,9 @@ for epoch in range(config.epochs):
             # if accelerator.dis
             #pred_xyz=model.module.decode(sequence,torch.ones_like(sequence).long().cuda()).squeeze()
             if accelerator.distributed_type=='NO':
-                pred_xyz=model.sample_euler(sequence,1,config.val_n_steps,N_cycle=config.max_cycles)[0].squeeze(0)
+                pred_xyz=model.sample_euler(sequence,1,config.val_n_steps)[0].squeeze(0)
             else:
-                pred_xyz=model.module.sample_euler(sequence,1,config.val_n_steps,N_cycle=config.max_cycles)[0].squeeze(0)
+                pred_xyz=model.module.sample_euler(sequence,1,config.val_n_steps)[0].squeeze(0)
             #pred_xyz=model(sequence)[-1].squeeze()
             loss=dRMAE(pred_xyz,pred_xyz,gt_xyz,gt_xyz)
 
@@ -453,7 +437,6 @@ for epoch in range(config.epochs):
             best_val_loss=val_loss
             best_preds=val_preds
             torch.save(model.state_dict(),f'weights/{prefix}_RibonanzaNet_3D.pt')
-            torch.save(optimizer.state_dict(),f'weights/{prefix}_RibonanzaNet_3D_optimizer.pt')
-            
+
     # 1.053595052265986 train loss after epoch 0
 torch.save(model.state_dict(),f'weights/{prefix}_RibonanzaNet_3D_final.pt')
