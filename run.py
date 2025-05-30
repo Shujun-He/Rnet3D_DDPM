@@ -323,6 +323,8 @@ for epoch in range(config.epochs):
         gt_xyz=batch['xyz'].squeeze()
         mask=~torch.isnan(gt_xyz)
 
+        L=sequence.shape[1]
+
         pdf_vals=get_sample_pdf(gt_xyz)
         #exit()
         gt_xyz[torch.isnan(gt_xyz)]=0
@@ -331,7 +333,7 @@ for epoch in range(config.epochs):
         distogram_mask=distance_matrix==distance_matrix
         distance_matrix=distance_matrix.clip(2,39).long()
 
-
+        
 
         gt_xyz=gt_xyz.unsqueeze(0).repeat(config.decoder_batch_size,1,1)
         #time_steps=torch.randint(0,config.n_times,size=(gt_xyz.shape[0],)).to(gt_xyz.device)
@@ -376,7 +378,11 @@ for epoch in range(config.epochs):
         
         #(loss/batch_size*len(gt_xyz)).backward()
 
-        accelerator.backward((loss+config.distogram_weight*distogram_loss)/config.batch_size*len(gt_xyz)**config.loss_power_scale/(100**config.loss_power_scale))
+        loss_length_scale=L**config.loss_power_scale/(100**config.loss_power_scale)
+        # print(L)
+        # print(len(gt_xyz))
+        #print(loss_length_scale)
+        accelerator.backward((loss+config.distogram_weight*distogram_loss)/config.batch_size*loss_length_scale)
 
         if (idx+1)%config.batch_size==0 or idx+1 == len(tbar):
 
@@ -393,7 +399,7 @@ for epoch in range(config.epochs):
                 warmup_schedule.step()
             
             lr=optimizer.param_groups[0]['lr']
-            print(total_steps,lr)
+            #print(total_steps,lr)
 
             if (epoch+1)>config.cos_epoch:
                 schedule.step()
