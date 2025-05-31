@@ -6,7 +6,7 @@ from Network import *
 
 class finetuned_RibonanzaNet(RibonanzaNet):
     def __init__(self, rnet_config, config, pretrained=False):
-        rnet_config.dropout=0.0
+        rnet_config.dropout=config.trunk_dropout
         rnet_config.use_grad_checkpoint=True
         self.rnet_config=rnet_config
         super(finetuned_RibonanzaNet, self).__init__(rnet_config)
@@ -19,8 +19,8 @@ class finetuned_RibonanzaNet(RibonanzaNet):
         #                                 nn.Linear(64,1)) 
         self.dropout=nn.Dropout(0.0)
 
-        rnet_config.nlayers=24
-        rnet_config.dropout=0.2
+        rnet_config.nlayers=48
+        rnet_config.dropout=0.1
         self.extra_evoformer = []
 
         for i,layer in enumerate(range(rnet_config.nlayers)):
@@ -171,28 +171,12 @@ class finetuned_RibonanzaNet(RibonanzaNet):
         distance_features=distance_features+self.pair_distance_mlp2(distance_features)
         return distance_features
 
-    # def get_conditioning(self, src,trunk_grad=True):
 
-    #     #with torch.no_grad():
-    #     with torch.set_grad_enabled(trunk_grad):
-    #         all_sequence_features, all_pairwise_features=self.get_embeddings(src, torch.ones_like(src).long().to(src.device))
 
-    #     sequence_features=all_sequence_features*self.layer_weights.softmax(0)[:,None,None,None]
-    #     pairwise_features=all_pairwise_features*self.layer_weights.softmax(0)[:,None,None,None,None]
-    #     #print(self.layer_weights.softmax(0))
-    #     sequence_features=sequence_features.sum(0)
-    #     pairwise_features=pairwise_features.sum(0)
-
-    #     for layer in self.extra_evoformer.transformer_encoder:
-    #         sequence_features,pairwise_features=checkpoint.checkpoint(layer, 
-    #         [sequence_features, pairwise_features, torch.ones_like(src).long().to(src.device), False],
-    #         use_reentrant=False)
+    def get_conditioning(self,src,cycles,trunk_grad=False):
         
-    #     return sequence_features, pairwise_features
-
-    def get_conditioning(self,src,cycles):
-
-        with torch.no_grad():
+        #print(f'Get conditioning with trunk_grad={trunk_grad} and cycles={cycles}')
+        with torch.set_grad_enabled(trunk_grad):
             all_sequence_features, all_pairwise_features=self.get_embeddings(src, torch.ones_like(src).long().to(src.device))
             all_sequence_features=all_sequence_features.detach()
             all_pairwise_features=all_pairwise_features.detach()
@@ -252,9 +236,9 @@ class finetuned_RibonanzaNet(RibonanzaNet):
 
         return tgt, pairwise_features, distance_features
 
-    def forward(self,src,xyz,t, N_cycle=4):
+    def forward(self,src,xyz,t, trunk_grad, N_cycle=4):
         
-        sequence_features, pairwise_features=self.get_conditioning(src,N_cycle)
+        sequence_features, pairwise_features=self.get_conditioning(src,N_cycle,trunk_grad)
 
         distogram=self.distogram_predictor(pairwise_features)
 
@@ -366,33 +350,17 @@ class finetuned_RibonanzaNet(RibonanzaNet):
         
         return x_t_minus_1#.clamp(-1., 1)
                 
-    def sample(self, src, N):
-        # start from random noise vector, NxLx3
-        x_t = torch.randn((N, src.shape[1], 3)).to(src.device)
-        
-        # autoregressively denoise from x_T to x_0
-        #     i.e., generate image from noise, x_T
+    def sample(self, src, N, N_cycle=1):
+        device = src.device
+        x_t = torch.randn((N, src.shape[1], 3)).to(device)
 
-        #first get conditioning
+        # Get conditioning
         with torch.no_grad():
-            all_sequence_features, all_pairwise_features=self.get_embeddings(src, torch.ones_like(src).long().to(src.device))
+            sequence_features, pairwise_features=self.get_conditioning(src,N_cycle)
 
-        sequence_features=all_sequence_features*self.layer_weights.softmax(0)[:,None,None,None]
-        pairwise_features=all_pairwise_features*self.layer_weights.softmax(0)[:,None,None,None,None]
-        #print(self.layer_weights.softmax(0))
-        sequence_features=sequence_features.sum(0)
-        pairwise_features=pairwise_features.sum(0)
-
-        for layer in self.extra_evoformer.transformer_encoder:
-            sequence_features,pairwise_features=checkpoint.checkpoint(layer, 
-            [sequence_features, pairwise_features, torch.ones_like(src).long().to(src.device), False],
-            use_reentrant=False)
-
-        # sequence_features=sequence_features.expand(N,-1,-1)
-        # pairwise_features=pairwise_features.expand(N,-1,-1,-1)
-        distogram=self.distogram_predictor(pairwise_features).squeeze()
-        distogram=distogram.squeeze()[:,:,2:40].softmax(-1)*torch.arange(2,40).float().cuda() 
-        distogram=distogram.sum(-1)  
+        distogram = self.distogram_predictor(pairwise_features).squeeze()
+        distogram = distogram.squeeze()[:, :, 2:40].softmax(-1) * torch.arange(2, 40).float().to(device)
+        distogram = distogram.sum(-1)
 
         for t in range(self.n_times-1, -1, -1):
             timestep = torch.tensor([t]).repeat_interleave(N, dim=0).long().to(src.device)

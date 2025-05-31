@@ -939,8 +939,8 @@ class SimpleStructureModule(nn.Module):
         
         #src = src*src_mask.float().unsqueeze(-1)
 
-        pairwise_bias=self.pairwise2heads(self.pairwise_norm(pairwise_features)).permute(0,3,1,2)+\
-            self.distance2heads(self.distance_norm(distance_features)).permute(0,3,1,2)
+        pairwise_bias=self.pairwise2heads(self.pairwise_norm(pairwise_features)).permute(0,3,1,2)#+\
+            #self.distance2heads(self.distance_norm(distance_features)).permute(0,3,1,2)
 
         
 

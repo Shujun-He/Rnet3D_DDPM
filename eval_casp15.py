@@ -48,14 +48,14 @@ from Diffusion import finetuned_RibonanzaNet
 
 
 
-config=load_config_from_yaml("diffusion_config.yaml")
+config=load_config_from_yaml("diffusion_config2.yaml")
 
 model=finetuned_RibonanzaNet(load_config_from_yaml("pairwise.yaml"),config,pretrained=True).cuda()
 #model.decode(torch.ones(1,10).long().cuda(),torch.ones(1,10).long().cuda())
 
 
 import torch
-state_dict=torch.load("weights/diffusion_config.yaml_RibonanzaNet_3D.pt",map_location='cpu')
+state_dict=torch.load("weights/diffusion_config2.yaml_RibonanzaNet_3D.pt",map_location='cpu')
 #state_dict=torch.load("RibonanzaNet-3D-v2.pt",map_location='cpu')
 
 #get rid of module. from ddp state dict
@@ -87,8 +87,8 @@ for i in tqdm(range(len(test_dataset))):
     predicted_dm=[]
     #for _ in range(5):
     with torch.no_grad():
-        xyz,distogram=model.sample_euler(src,5,200)
-        #xyz,distogram=model.sample(src,5)
+        #xyz,distogram=model.sample_euler(src,5,200)
+        xyz,distogram=model.sample(src,5)
         #xyz,distogram=model.sample_heun(src,5,100)
         #xyz=xyz.squeeze()
     

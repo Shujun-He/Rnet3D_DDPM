@@ -1,1 +1,1 @@
-python generate_multinode_configs.py --n_nodes 4 --n_gpus_per_node 8 --master_node gpu021 --script_name "run.py --config diffusion_config.yaml"
+python generate_multinode_configs.py --n_nodes 8 --n_gpus_per_node 8 --master_node gpu002 --script_name "run.py --config diffusion_config.yaml --config stage2.yaml"
