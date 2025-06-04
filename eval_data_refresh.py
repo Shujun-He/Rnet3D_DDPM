@@ -11,7 +11,15 @@ import os
 
 
 
-test_data=pd.read_csv("../input/test_sequences.csv")#.loc[2:].reset_index(drop=True)
+test_data=pd.read_csv("../CONFIDENTIAL/rerun_DATA_REFRESH/test_sequences.csv")#.loc[2:].reset_index(drop=True)
+solution=pd.read_csv("../CONFIDENTIAL/rerun_DATA_REFRESH/test_solution.csv")
+id_map=pd.read_csv("../CONFIDENTIAL/rerun_DATA_REFRESH/id_map.csv")
+id_map={str(k):str(v) for k,v in zip(id_map['orig'],id_map['new'])}
+test_data['target_id']=test_data['target_id'].apply(lambda x: str(x))
+test_data['target_id']=test_data['target_id'].apply(lambda x: id_map[x])
+solution['target_id']=solution['ID'].apply(lambda x: x.split("_")[0])
+
+
 
 from torch.utils.data import Dataset, DataLoader
 
@@ -48,14 +56,14 @@ from Diffusion import finetuned_RibonanzaNet
 
 
 
-config=load_config_from_yaml("diffusion_config2.yaml")
+config=load_config_from_yaml("stage2.yaml")
 
 model=finetuned_RibonanzaNet(load_config_from_yaml("pairwise.yaml"),config,pretrained=True).cuda()
 #model.decode(torch.ones(1,10).long().cuda(),torch.ones(1,10).long().cuda())
 
 
 import torch
-state_dict=torch.load("weights/diffusion_config2.yaml_RibonanzaNet_3D.pt",map_location='cpu')
+state_dict=torch.load("weights/stage2.yaml_RibonanzaNet_3D.pt",map_location='cpu')
 #state_dict=torch.load("RibonanzaNet-3D-v2.pt",map_location='cpu')
 
 #get rid of module. from ddp state dict
@@ -66,9 +74,8 @@ for key in state_dict:
 
 model.load_state_dict(new_state_dict)
 
-solution=pd.read_csv("../input/validation_labels.csv")
 
-os.system('mkdir casp15_distograms')
+os.system('mkdir data_refresh_distograms')
 
 from tqdm import tqdm
 model.eval()
@@ -77,7 +84,7 @@ for i in tqdm(range(len(test_dataset))):
     src=test_dataset[i]['sequence'].long()
     src=src.unsqueeze(0).cuda()
     target_id=test_data.loc[i,'target_id']
-    target_solution=solution[solution['ID'].str.contains(target_id)]
+    target_solution=solution[solution['target_id']==target_id]
     gt_xyz=target_solution[['x_1','y_1','z_1']].values
     gt_xyz[gt_xyz<-1e17]=np.nan
     gt_distogram=calculate_distance_matrix(torch.tensor(gt_xyz),torch.tensor(gt_xyz)).numpy().clip(2,39)
@@ -131,7 +138,7 @@ for i in tqdm(range(len(test_dataset))):
     plt.imshow(predicted_dm[1],cmap='hot',interpolation='nearest')
     plt.title('predicted structure distogram')
     #plt.colorbar()
-    plt.savefig(f"casp15_distograms/{target_id}.png")
+    plt.savefig(f"data_refresh_distograms/{target_id}.png")
     plt.clf()
     #exit()
 
@@ -182,7 +189,7 @@ submission=pd.DataFrame(data,columns=columns)
 
 
 submission
-submission.to_csv('submission_casp15.csv',index=False)
+submission.to_csv('submission.csv',index=False)
 
 #score val
 import pandas as pd
@@ -331,7 +338,7 @@ def score(solution: pd.DataFrame, submission: pd.DataFrame, row_id_column_name: 
     return results, results_per_sub, outputs
     #return outputs
 
-solution=pd.read_csv("../input/validation_labels.csv")
+#solution=pd.read_csv("../input/validation_labels.csv")
 
 scores,results_per_sub,outputs=score(solution,submission,'ID')
 print(np.mean(scores))

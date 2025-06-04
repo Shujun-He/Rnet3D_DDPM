@@ -1,194 +1,9 @@
-import pandas as pd
-import torch
-import matplotlib.pyplot as plt
-import numpy as np
-import torch
-import random
-import pickle
-from utils import *
-import os
-#from Diffusion import Diffusion
-
-
-
-test_data=pd.read_csv("../input/test_sequences.csv")#.loc[2:].reset_index(drop=True)
-
-from torch.utils.data import Dataset, DataLoader
-
-class RNADataset(Dataset):
-    def __init__(self,data):
-        self.data=data
-        self.tokens={nt:i for i,nt in enumerate('ACGU')}
-
-    def __len__(self):
-        return len(self.data)
-    
-    def __getitem__(self, idx):
-        sequence=[self.tokens[nt] for nt in (self.data.loc[idx,'sequence'])]
-        sequence=np.array(sequence)
-        sequence=torch.tensor(sequence)
-
-
-
-
-        return {'sequence':sequence}
-
-test_dataset=RNADataset(test_data)
-
-
-
-import sys
-
-#sys.path.append("/kaggle/input/ribonanzanet2d-final")
-
-import torch.nn as nn
-from Diffusion import finetuned_RibonanzaNet
-
-
-
-
-
-config=load_config_from_yaml("diffusion_config2.yaml")
-
-model=finetuned_RibonanzaNet(load_config_from_yaml("pairwise.yaml"),config,pretrained=True).cuda()
-#model.decode(torch.ones(1,10).long().cuda(),torch.ones(1,10).long().cuda())
-
-
-import torch
-state_dict=torch.load("weights/diffusion_config2.yaml_RibonanzaNet_3D.pt",map_location='cpu')
-#state_dict=torch.load("RibonanzaNet-3D-v2.pt",map_location='cpu')
-
-#get rid of module. from ddp state dict
-new_state_dict={}
-
-for key in state_dict:
-    new_state_dict[key[7:]]=state_dict[key]
-
-model.load_state_dict(new_state_dict)
-
-solution=pd.read_csv("../input/validation_labels.csv")
-
-os.system('mkdir casp15_distograms')
-
-from tqdm import tqdm
-model.eval()
-preds=[]
-for i in tqdm(range(len(test_dataset))):
-    src=test_dataset[i]['sequence'].long()
-    src=src.unsqueeze(0).cuda()
-    target_id=test_data.loc[i,'target_id']
-    target_solution=solution[solution['ID'].str.contains(target_id)]
-    gt_xyz=target_solution[['x_1','y_1','z_1']].values
-    gt_xyz[gt_xyz<-1e17]=np.nan
-    gt_distogram=calculate_distance_matrix(torch.tensor(gt_xyz),torch.tensor(gt_xyz)).numpy().clip(2,39)
-    #model.eval()
-    #exit()
-    #tmp=[]
-    predicted_dm=[]
-    #for _ in range(5):
-    with torch.no_grad():
-        #xyz,distogram=model.sample_euler(src,5,200)
-        xyz,distogram=model.sample(src,5)
-        #xyz,distogram=model.sample_heun(src,5,100)
-        #xyz=xyz.squeeze()
-    
-
-
-    print(f"target_id: {target_id}")
-    best_rmsd=999999
-    best_lddt=0
-    for i in range(5):
-        pred_xyz=xyz[i]
-        rmsd=align_svd_rmsd(pred_xyz,torch.tensor(gt_xyz).float().cuda()).item()
-        lddt=compute_lddt(pred_xyz.cpu().numpy(),gt_xyz)
-        #print(rmsd,lddt)
-        if rmsd<best_rmsd:
-            best_rmsd=rmsd
-
-        if lddt>best_lddt:
-            best_lddt=lddt
-
-    print(f"target_id: {target_id} best_rmsd: {best_rmsd} best_lddt: {best_lddt}")
-
-    predicted_dm=[]
-    for j in range(2):
-        predicted_dm.append(calculate_distance_matrix(xyz[j],xyz[j]).cpu().numpy().clip(2,39))
-
-        #tmp.append(xyz.cpu().numpy())
-    
-
-    plt.subplot(2,2,1)
-    plt.imshow(gt_distogram,cmap='hot',interpolation='nearest')
-    plt.title('ground truth distogram')
-    #plt.colorbar()
-    plt.subplot(2,2,2)
-    plt.imshow(distogram.cpu().numpy(),cmap='hot',interpolation='nearest')
-    plt.title('predicted distogram')
-    plt.subplot(2,2,3)
-    plt.imshow(predicted_dm[0],cmap='hot',interpolation='nearest')
-    plt.title('predicted structure distogram')
-    plt.subplot(2,2,4)
-    plt.imshow(predicted_dm[1],cmap='hot',interpolation='nearest')
-    plt.title('predicted structure distogram')
-    #plt.colorbar()
-    plt.savefig(f"casp15_distograms/{target_id}.png")
-    plt.clf()
-    #exit()
-
-    # model.eval()
-    # with torch.no_grad():
-    #     xyz=model(src)[-1].squeeze()
-    #tmp.append(xyz.cpu().numpy())
-
-    #tmp=np.stack(tmp,0)
-    #exit()
-    preds.append(xyz.cpu().numpy())
-
-
-ID=[]
-resname=[]
-resid=[]
-x=[]
-y=[]
-z=[]
-
-data=[]
-
-for i in range(len(test_data)):
-    #print(test_data.loc[i])
-
-    
-    for j in range(len(test_data.loc[i,'sequence'])):
-        # ID.append(test_data.loc[i,'sequence_id']+f"_{j+1}")
-        # resname.append(test_data.loc[i,'sequence'][j])
-        # resid.append(j+1) # 1 indexed
-        row=[test_data.loc[i,'target_id']+f"_{j+1}",
-             test_data.loc[i,'sequence'][j],
-             j+1]
-
-        for k in range(5):
-            for kk in range(3):
-                row.append(preds[i][k][j][kk])
-        data.append(row)
-
-columns=['ID','resname','resid']
-for i in range(1,6):
-    columns+=[f"x_{i}"]
-    columns+=[f"y_{i}"]
-    columns+=[f"z_{i}"]
-
-
-submission=pd.DataFrame(data,columns=columns)
-
-
-submission
-submission.to_csv('submission_casp15.csv',index=False)
-
 #score val
 import pandas as pd
 import pandas.api.types
 import os
 import re
+import numpy as np
 
 # Function to parse TMscore output
 def parse_tmscore_output(output):
@@ -278,7 +93,7 @@ def score(solution: pd.DataFrame, submission: pd.DataFrame, row_id_column_name: 
 
     #os.system("cp //kaggle/input/usalign/USalign /kaggle/working/")
     #os.system("sudo chmod u+x /kaggle/working//USalign")
-
+    os.system("mkdir pdbs")
 
     # Extract pdb_id from ID (pdb_resid)
     solution["pdb_id"] = solution["ID"].apply(lambda x: x.split("_")[0])
@@ -291,6 +106,7 @@ def score(solution: pd.DataFrame, submission: pd.DataFrame, row_id_column_name: 
     results=[]
     outputs=[]
     results_per_sub=[]
+    pdb_ids=[]
     # Iterate through each pdb_id and generate PDB files for both clean and corrupted data
     for pdb_id, group_native in solution.groupby("pdb_id"):
         group_predicted = submission[submission["pdb_id"] == pdb_id]
@@ -298,16 +114,21 @@ def score(solution: pd.DataFrame, submission: pd.DataFrame, row_id_column_name: 
         # Define output file paths
         # clean_pdb_path = os.path.join(output_folder, f"{pdb_id}_C3_clean.pdb")
         # corrupted_pdb_path = os.path.join(output_folder, f"{pdb_id}_C3_corrupted.pdb")
-        native_pdb=f'native.pdb'
-        predicted_pdb=f'predicted.pdb'
+        
+        
 
         all_scores=[]
         for pred_cnt in range(1,6):
             tmp=[]
             for native_cnt in range(1,41):
                 # Write solution PDB
+                native_pdb=f'pdbs/{pdb_id}_native_{native_cnt}.pdb'
+                predicted_pdb=f'pdbs/{pdb_id}_predicted_{pred_cnt}.pdb'
+
                 resolved_cnt=write2pdb(group_native, native_cnt, native_pdb)
+
                 
+
                 # Write predicted PDB
                 _=write2pdb(group_predicted, pred_cnt, predicted_pdb)
 
@@ -325,13 +146,22 @@ def score(solution: pd.DataFrame, submission: pd.DataFrame, row_id_column_name: 
         print(all_scores)
         results_per_sub.append(all_scores)
         results.append(max(all_scores))
-    
+        pdb_ids.append(pdb_id)
+
     print(results)
     #return sum(results)/len(results), outputs
-    return results, results_per_sub, outputs
-    #return outputs
+    return results, results_per_sub, outputs, pdb_ids
 
-solution=pd.read_csv("../input/validation_labels.csv")
+solution=pd.read_csv("../CONFIDENTIAL/test_solution_CONFIDENTIAL.csv")
+submission=pd.read_csv("submission_casp16.csv")
 
-scores,results_per_sub,outputs=score(solution,submission,'ID')
-print(np.mean(scores))
+scores,results_per_sub,outputs, pdb_ids=score(solution,submission,'ID')
+
+print(np.mean(scores[3:]))
+
+df = pd.DataFrame()
+df['target_id'] = pdb_ids
+df['TM-score'] = scores
+df[[f'TM-score-{i}' for i in range(1, 6)]] = pd.DataFrame(results_per_sub)
+
+df.to_csv("casp16_scores.csv", index=False)

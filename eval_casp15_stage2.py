@@ -7,11 +7,31 @@ import random
 import pickle
 from utils import *
 import os
-#from Diffusion import Diffusion
+from Diffusion import Diffusion
 
+config = {
+    "seed": 0,
+    "cutoff_date": "2020-01-01",
+    "test_cutoff_date": "2022-05-01",
+    "max_len": 384,
+    "batch_size": 1,
+    "learning_rate": 1e-4,
+    "weight_decay": 0.0,
+    "mixed_precision": "bf16",
+    "model_config_path": "../working/configs/pairwise.yaml",  # Adjust path as needed
+    "epochs": 10,
+    "cos_epoch": 5,
+    "loss_power_scale": 1.0,
+    "max_cycles": 1,
+    "grad_clip": 0.1,
+    "gradient_accumulation_steps": 1,
+    "d_clamp": 30,
+    "max_len_filter": 9999999,
+    "structural_violation_epoch": 50,
+    "balance_weight": False,
+}
 
-
-test_data=pd.read_csv("../input/test_sequences.csv")#.loc[2:].reset_index(drop=True)
+test_data=pd.read_csv("../input/test_sequences.csv")
 
 from torch.utils.data import Dataset, DataLoader
 
@@ -42,21 +62,20 @@ import sys
 #sys.path.append("/kaggle/input/ribonanzanet2d-final")
 
 import torch.nn as nn
-from Diffusion import finetuned_RibonanzaNet
+from Network import finetuned_RibonanzaNet
 
 
 
 
 
-config=load_config_from_yaml("diffusion_config2.yaml")
+model=finetuned_RibonanzaNet(load_config_from_yaml("pairwise.yaml"),pretrained=True).cuda()
 
-model=finetuned_RibonanzaNet(load_config_from_yaml("pairwise.yaml"),config,pretrained=True).cuda()
+diffusion = Diffusion(model,1000).cuda()
 #model.decode(torch.ones(1,10).long().cuda(),torch.ones(1,10).long().cuda())
 
 
 import torch
-state_dict=torch.load("weights/diffusion_config2.yaml_RibonanzaNet_3D.pt",map_location='cpu')
-#state_dict=torch.load("RibonanzaNet-3D-v2.pt",map_location='cpu')
+state_dict=torch.load("RibonanzaNet-3D-stage2-final-v2.pt",map_location='cpu')
 
 #get rid of module. from ddp state dict
 new_state_dict={}
@@ -79,37 +98,16 @@ for i in tqdm(range(len(test_dataset))):
     target_id=test_data.loc[i,'target_id']
     target_solution=solution[solution['ID'].str.contains(target_id)]
     gt_xyz=target_solution[['x_1','y_1','z_1']].values
-    gt_xyz[gt_xyz<-1e17]=np.nan
     gt_distogram=calculate_distance_matrix(torch.tensor(gt_xyz),torch.tensor(gt_xyz)).numpy().clip(2,39)
     #model.eval()
-    #exit()
+
     #tmp=[]
     predicted_dm=[]
     #for _ in range(5):
     with torch.no_grad():
-        #xyz,distogram=model.sample_euler(src,5,200)
-        xyz,distogram=model.sample(src,5)
-        #xyz,distogram=model.sample_heun(src,5,100)
+        xyz,distogram=diffusion.sample(src,5)
         #xyz=xyz.squeeze()
     
-
-
-    print(f"target_id: {target_id}")
-    best_rmsd=999999
-    best_lddt=0
-    for i in range(5):
-        pred_xyz=xyz[i]
-        rmsd=align_svd_rmsd(pred_xyz,torch.tensor(gt_xyz).float().cuda()).item()
-        lddt=compute_lddt(pred_xyz.cpu().numpy(),gt_xyz)
-        #print(rmsd,lddt)
-        if rmsd<best_rmsd:
-            best_rmsd=rmsd
-
-        if lddt>best_lddt:
-            best_lddt=lddt
-
-    print(f"target_id: {target_id} best_rmsd: {best_rmsd} best_lddt: {best_lddt}")
-
     predicted_dm=[]
     for j in range(2):
         predicted_dm.append(calculate_distance_matrix(xyz[j],xyz[j]).cpu().numpy().clip(2,39))
@@ -182,7 +180,7 @@ submission=pd.DataFrame(data,columns=columns)
 
 
 submission
-submission.to_csv('submission_casp15.csv',index=False)
+submission.to_csv('submission.csv',index=False)
 
 #score val
 import pandas as pd
