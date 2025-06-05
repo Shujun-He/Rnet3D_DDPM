@@ -32,7 +32,7 @@ import argparse
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--config', type=str, default="stage1.yaml", help='Path to config.py')
+parser.add_argument('--config', type=str, default="recycle.yaml", help='Path to config.py')
 args = parser.parse_args()
 
 
@@ -72,7 +72,7 @@ model=finetuned_RibonanzaNet(load_config_from_yaml("pairwise.yaml"),config,pretr
 
 
 #save to pickle
-with open("train_data.pkl", "rb") as f:
+with open("../train_data.pkl", "rb") as f:
     data = pickle.load(f)
 
 # # Split train data into train/val/test¶
@@ -117,7 +117,7 @@ def get_ct(bp,s):
 from collections import defaultdict
 
 class RNA3D_Dataset(Dataset):
-    def __init__(self,indices,data):
+    def __init__(self,indices,data,max_len):
         self.indices=indices
         self.data=data
         #set default to 4
@@ -127,6 +127,7 @@ class RNA3D_Dataset(Dataset):
         self.tokens['G']=2
         self.tokens['U']=3
 
+        self.max_len=max_len
         #{nt:i for i,nt in enumerate('ACGU')}
 
     def __len__(self):
@@ -144,9 +145,9 @@ class RNA3D_Dataset(Dataset):
         xyz=torch.tensor(np.array(xyz))
 
 
-        if len(sequence)>config.max_len:
-            crop_start=np.random.randint(len(sequence)-config.max_len)
-            crop_end=crop_start+config.max_len
+        if len(sequence)>self.max_len:
+            crop_start=np.random.randint(len(sequence)-self.max_len)
+            crop_end=crop_start+self.max_len
 
             sequence=sequence[crop_start:crop_end]
             xyz=xyz[crop_start:crop_end]
@@ -172,8 +173,8 @@ class RNA3D_Dataset(Dataset):
 # In[13]:
 
 
-train_dataset=RNA3D_Dataset(train_index,data)
-val_dataset=RNA3D_Dataset(test_index,data)
+train_dataset=RNA3D_Dataset(train_index,data,config.max_len)
+val_dataset=RNA3D_Dataset(test_index,data,config.val_max_len)
 
 
 # In[14]:
@@ -421,10 +422,11 @@ for epoch in range(config.epochs):
         with torch.no_grad():
             # if accelerator.dis
             #pred_xyz=model.module.decode(sequence,torch.ones_like(sequence).long().cuda()).squeeze()
-            if accelerator.distributed_type=='NO':
-                pred_xyz=model.sample_euler(sequence,1,config.val_n_steps,N_cycle=config.max_cycles)[0].squeeze(0)
-            else:
-                pred_xyz=model.module.sample_euler(sequence,1,config.val_n_steps,N_cycle=config.max_cycles)[0].squeeze(0)
+            with accelerator.autocast():
+                if accelerator.distributed_type=='NO':
+                    pred_xyz=model.sample_euler(sequence,1,config.val_n_steps,N_cycle=config.max_cycles)[0].squeeze(0)
+                else:
+                    pred_xyz=model.module.sample_euler(sequence,1,config.val_n_steps,N_cycle=config.max_cycles)[0].squeeze(0)
             #pred_xyz=model(sequence)[-1].squeeze()
             loss=dRMAE(pred_xyz,pred_xyz,gt_xyz,gt_xyz)
 

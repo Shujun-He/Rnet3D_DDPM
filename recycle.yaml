@@ -19,12 +19,13 @@ learning_rate: 0.0005
 loss_power_scale: 0
 max_cycles: 4
 max_len: 384
+val_max_len: 768
 max_len_filter: 9999999
 min_len_filter: 10
 mixed_precision: "bf16"
 model_config_path: ../working/configs/pairwise.yaml
 n_times: 1000
-pretrained_weight_path: ../../8m_exps/test32/models/epoch_0/pytorch_model_fsdp.bin
+pretrained_weight_path: ../pytorch_model_fsdp.bin
 reload_model_path: none
 reload_optimizer_path: none
 sampler_clip_max: 256

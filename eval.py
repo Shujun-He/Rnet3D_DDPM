@@ -86,7 +86,11 @@ for i in tqdm(range(len(test_dataset))):
     #for _ in range(5):
     with torch.no_grad():
         #xyz,distogram=model.sample_euler(src,5,200,N_cycle=config.max_cycles)
-        xyz,distogram=model.sample_euler(src,5,200,N_cycle=10)
+        with torch.cuda.amp.autocast():
+            #xyz,distogram=model.sample_euler(src,5,200,N_cycle=10)
+            #xyz,distogram=model.sample_euler(src,5,200,N_cycle=config.max_cycles)
+            #xyz,distogram=model.sample_euler(src,5,200,N_cycle=10)
+            xyz,distogram=model.sample_euler(src,5,200,N_cycle=10)
     preds.append(xyz.cpu().numpy())
 
 

@@ -182,8 +182,7 @@ class finetuned_RibonanzaNet(RibonanzaNet):
         #print(f'Get conditioning with trunk_grad={trunk_grad} and cycles={cycles}')
         with torch.set_grad_enabled(trunk_grad):
             all_sequence_features, all_pairwise_features=self.get_embeddings(src, torch.ones_like(src).long().to(src.device))
-            all_sequence_features=all_sequence_features.detach()
-            all_pairwise_features=all_pairwise_features.detach()
+
 
         B,L =all_sequence_features.shape[1],all_sequence_features.shape[2]
         s_hat=torch.zeros(B,L,self.rnet_config.ninp).to(src.device)
