@@ -175,6 +175,47 @@ class finetuned_RibonanzaNet(RibonanzaNet):
         distance_features=distance_features+self.pair_distance_mlp2(distance_features)
         return distance_features
 
+    def get_embeddings(self, src,src_mask=None,return_aw=False):
+        B,L=src.shape
+        src = src
+        src = self.encoder(src).reshape(B,L,-1)
+        
+        #spawn outer product
+        if self.use_gradient_checkpoint:
+            #print("using grad checkpointing")
+            pairwise_features=checkpoint.checkpoint(self.custom(self.outer_product_mean), src, use_reentrant=False)
+            pairwise_features=pairwise_features+self.pos_encoder(src)
+        else:
+            pairwise_features=self.outer_product_mean(src)
+            pairwise_features=pairwise_features+self.pos_encoder(src)
+
+
+        #attention_weights=[]
+
+        if self.training:
+            all_sequence_features=[]
+            all_pairwise_features=[]
+            for i,layer in enumerate(self.transformer_encoder):
+                src,pairwise_features=checkpoint.checkpoint(self.custom(layer), 
+                [src, pairwise_features, src_mask, return_aw],
+                use_reentrant=False)
+
+                all_sequence_features.append(src)
+                all_pairwise_features.append(pairwise_features)
+
+            return torch.stack(all_sequence_features,0), torch.stack(all_pairwise_features,0)
+        else:
+            all_sequence_features=torch.zeros_like(src)
+            all_pairwise_features=torch.zeros_like(pairwise_features)
+            layer_weights=self.layer_weights.softmax(0)#[:,None,None,None]
+            for i,layer in enumerate(self.transformer_encoder):
+                src,pairwise_features=layer([src, pairwise_features, src_mask, return_aw])
+
+
+                all_sequence_features+=src * layer_weights[i,None,None,None]
+                all_pairwise_features+=pairwise_features * layer_weights[i,None,None,None,None]
+
+            return all_sequence_features, all_pairwise_features
 
 
     def get_conditioning(self,src,cycles,trunk_grad=False):
@@ -182,9 +223,10 @@ class finetuned_RibonanzaNet(RibonanzaNet):
         #print(f'Get conditioning with trunk_grad={trunk_grad} and cycles={cycles}')
         with torch.set_grad_enabled(trunk_grad):
             all_sequence_features, all_pairwise_features=self.get_embeddings(src, torch.ones_like(src).long().to(src.device))
+            #print(f'Got embeddings with shape {all_sequence_features.shape} and {all_pairwise_features.shape}')
+            #exit()
 
-
-        B,L =all_sequence_features.shape[1],all_sequence_features.shape[2]
+        B,L = src.shape
         s_hat=torch.zeros(B,L,self.rnet_config.ninp).to(src.device)
         z_hat=torch.zeros(B,L,L,self.rnet_config.pairwise_dimension).to(src.device)
 
@@ -192,11 +234,16 @@ class finetuned_RibonanzaNet(RibonanzaNet):
             #print(f'Cycle {c}/{cycles}')
             with torch.set_grad_enabled(self.training and c==cycles):
             #with torch.no_grad():
-                sequence_features=all_sequence_features*self.layer_weights.softmax(0)[:,None,None,None]
-                pairwise_features=all_pairwise_features*self.layer_weights.softmax(0)[:,None,None,None,None]
-                #print(self.layer_weights.softmax(0))
-                sequence_features_init=sequence_features.sum(0)
-                pairwise_features_init=pairwise_features.sum(0)
+                if self.training:
+                    sequence_features=all_sequence_features*self.layer_weights.softmax(0)[:,None,None,None]
+                    pairwise_features=all_pairwise_features*self.layer_weights.softmax(0)[:,None,None,None,None]
+                    # print(self.layer_weights.softmax(0))
+                    # exit()
+                    sequence_features_init=sequence_features.sum(0)
+                    pairwise_features_init=pairwise_features.sum(0)
+                else:
+                    sequence_features_init=all_sequence_features
+                    pairwise_features_init=all_pairwise_features
 
                 sequence_features=sequence_features_init+self.recycle_sequence(s_hat)
                 pairwise_features=pairwise_features_init+self.recycle_pairwise(z_hat)
@@ -555,7 +602,7 @@ class finetuned_RibonanzaNet(RibonanzaNet):
             sigma_t = eta * torch.sqrt((1 - alpha_bar_next) / (1 - alpha_bar_t) * (1 - alpha_bar_t / alpha_bar_next))
             sqrt_beta = self.extract(self.sqrt_betas.to(t_curr.device), t_curr, x_t.shape)
             z = torch.randn_like(x_t) if i + 1 < len(timesteps) else torch.zeros_like(x_t)
-            x_t = x_t * scale_factor - eps1 * step_size +  z * sqrt_beta * eta
+            x_t = x_t * scale_factor - eps1 * step_size +  z * sigma_t * eta
 
 
 

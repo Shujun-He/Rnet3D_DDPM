@@ -11,10 +11,14 @@ import os
 import argparse
 
 #get target csv from argparse, config, and weight 
+#add num_steps an N_cycle
 parser = argparse.ArgumentParser(description='Evaluate RNA structure prediction model')
 parser.add_argument('--target_csv', type=str, default='../input/test_sequences.csv', help='Path to the target CSV file')
 parser.add_argument('--config', type=str, default='stage1.yaml', help='Path to the configuration YAML file')
 parser.add_argument('--weights', type=str, default='weights/stage1.yaml_RibonanzaNet_3D.pt', help='Path to the model weights file')
+parser.add_argument('--num_steps', type=int, default=200, help='Number of steps for sampling')
+parser.add_argument('--N_cycle', type=int, default=10, help='Number of cycles for sampling')
+parser.add_argument('--eta', type=float, default=0.0, help='Stochasticity parameter for sampling')
 
 args = parser.parse_args()
 
@@ -89,8 +93,10 @@ for i in tqdm(range(len(test_dataset))):
         with torch.cuda.amp.autocast():
             #xyz,distogram=model.sample_euler(src,5,200,N_cycle=10)
             #xyz,distogram=model.sample_euler(src,5,200,N_cycle=config.max_cycles)
-            #xyz,distogram=model.sample_euler(src,5,200,N_cycle=10)
-            xyz,distogram=model.sample_euler(src,5,200,N_cycle=10)
+            #xyz,distogram=model.sample_euler(src,5,200,N_cycle=10,eta=1.0)
+            #xyz,distogram=model.sample_euler(src,5,args.num_steps,N_cycle=args.N_cycle)
+            xyz,distogram=model.sample_euler(src,5,args.num_steps,N_cycle=args.N_cycle,eta=args.eta)
+            #xyz,distogram=model.sample(src,5,N_cycle=args.N_cycle)
     preds.append(xyz.cpu().numpy())
 
 
@@ -130,6 +136,6 @@ for i in range(1,6):
 submission=pd.DataFrame(data,columns=columns)
 
 
-csv_filename=args.target_csv.split('/')[-1].replace('.csv','')
-submission.to_csv(f'{csv_filename}_predictions.csv',index=False)
+csv_filename=args.config.split('/')[-1].replace('.csv','')
+submission.to_csv(f'{csv_filename}_{args.N_cycle}_cycles_{args.num_steps}_steps_{args.eta}_eta.csv',index=False)
 

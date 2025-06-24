@@ -153,7 +153,7 @@ def score(solution: pd.DataFrame, submission: pd.DataFrame, row_id_column_name: 
     return results, results_per_sub, outputs, pdb_ids
 
 solution=pd.read_csv("../CONFIDENTIAL/rerun_DATA_REFRESH/test_solution.csv")
-submission=pd.read_csv("test_sequences_predictions.csv")
+submission=pd.read_csv("recycle.yaml_10_cycles_200_steps_noised.csv")
 id_map=pd.read_csv("../CONFIDENTIAL/rerun_DATA_REFRESH/id_map.csv")
 id_map={str(k):str(v) for k,v in zip(id_map['orig'],id_map['new'])}
 
