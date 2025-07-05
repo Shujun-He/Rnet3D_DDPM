@@ -10,6 +10,52 @@ import re
 
 from torch.optim.lr_scheduler import _LRScheduler
 
+def spatial_crop(xyz: np.ndarray, 
+                 resids: np.ndarray,
+                 token_center_mask: np.ndarray = None, 
+                 preferred_mask: np.ndarray = None, 
+                 crop_size: int = 384) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Spatial crop around a randomly chosen token center atom.
+
+    Args:
+        xyz (np.ndarray): Array of shape (N, 3) representing atomic or residue coordinates.
+        resids (np.ndarray): Array of shape (N,) containing residue indices corresponding to xyz.
+        token_center_mask (np.ndarray): Boolean array of shape (N,) indicating token center atoms.
+        preferred_mask (np.ndarray, optional): Boolean array of shape (N,) to restrict reference atom selection.
+        crop_size (int): Number of atoms/residues to include in the crop.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Cropped xyz (crop_size, 3) and resids (crop_size,)
+    """
+    # assert xyz.shape[0] == token_center_mask.shape[0] == resids.shape[0], "Input shapes must match."
+
+    # if preferred_mask is not None:
+    #     assert preferred_mask.shape[0] == xyz.shape[0], "Preferred mask must match xyz shape."
+    #     valid_centers = np.where(token_center_mask & preferred_mask)[0]
+    # else:
+    #     valid_centers = np.where(token_center_mask)[0]
+
+    # if len(valid_centers) == 0:
+    #     raise ValueError("No valid token centers found to select as reference atom.")
+
+    # Randomly select a reference atom
+
+    valid_centers = np.where(xyz[:,0]==xyz[:,0])[0]
+
+    ref_idx = np.random.choice(valid_centers)
+    ref_coord = xyz[ref_idx]
+
+    # Compute distances to all atoms
+    dists = np.linalg.norm(xyz - ref_coord, axis=1)
+
+    # Get indices of closest atoms/residues and sort them
+    crop_indices = np.argsort(dists)[:crop_size]
+    crop_indices = np.sort(crop_indices)
+
+
+    return xyz[crop_indices], resids[crop_indices]
+
 class LinearWarmupScheduler(_LRScheduler):
     """Linear warmup learning rate scheduler.
     

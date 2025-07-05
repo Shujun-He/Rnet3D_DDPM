@@ -117,7 +117,7 @@ def get_ct(bp,s):
 from collections import defaultdict
 
 class RNA3D_Dataset(Dataset):
-    def __init__(self,indices,data,max_len):
+    def __init__(self,indices,data,max_len,training=False):
         self.indices=indices
         self.data=data
         #set default to 4
@@ -127,7 +127,10 @@ class RNA3D_Dataset(Dataset):
         self.tokens['G']=2
         self.tokens['U']=3
 
+        self.training=training
+
         self.max_len=max_len
+
         #{nt:i for i,nt in enumerate('ACGU')}
 
     def __len__(self):
@@ -138,42 +141,44 @@ class RNA3D_Dataset(Dataset):
         idx=self.indices[idx]
         sequence=[self.tokens[nt] for nt in (self.data['sequence'][idx])]
         sequence=np.array(sequence)
-        sequence=torch.tensor(sequence)
+        
 
         #get C1' xyz
         xyz=self.data['xyz'][idx]
         xyz=torch.tensor(np.array(xyz))
+        res_ids=np.arange(len(xyz))
+
+        if self.training:
+            if len(sequence)>self.max_len:
+
+                if np.random.rand()<0.25: 
+                    crop_start=np.random.randint(len(sequence)-self.max_len)
+                    crop_end=crop_start+self.max_len
+
+                    sequence=sequence[crop_start:crop_end]
+                    xyz=xyz[crop_start:crop_end]
+                    res_ids=res_ids[crop_start:crop_end]
+                else:
+                    xyz, res_ids=spatial_crop(xyz,res_ids,crop_size=self.max_len)
+                    sequence=sequence[res_ids]
+        else:
+            if len(sequence)>self.max_len:
+                sequence=sequence[:self.max_len]
+                xyz=xyz[:self.max_len]
+                res_ids=res_ids[:self.max_len]
 
 
-        if len(sequence)>self.max_len:
-            crop_start=np.random.randint(len(sequence)-self.max_len)
-            crop_end=crop_start+self.max_len
-
-            sequence=sequence[crop_start:crop_end]
-            xyz=xyz[crop_start:crop_end]
-        
-        #center at first atom if first atom does not exit go until it does
-        for i in range(len(xyz)):
-            if (~torch.isnan(xyz[i])).all():
-                break
-        xyz=xyz-xyz[i]
-
-        # for i in range(len(xyz)):
-
-        #     if torch.isnan(xyz[i]).any():
-        #         if i==0:
-        #             xyz[i]=xyz[i+1]
-        #         else:
-        #             xyz[i]=xyz[i-1]
 
         return {'sequence':sequence,
-                'xyz':xyz}
+                'xyz':xyz,
+                'res_ids':res_ids,}
+
 
 
 # In[13]:
 
 
-train_dataset=RNA3D_Dataset(train_index,data,config.max_len)
+train_dataset=RNA3D_Dataset(train_index,data,config.max_len, training=True)
 val_dataset=RNA3D_Dataset(test_index,data,config.val_max_len)
 
 
@@ -317,6 +322,7 @@ for epoch in range(config.epochs):
         mask=~torch.isnan(gt_xyz)
 
         L=sequence.shape[1]
+        res_ids=batch['res_ids']
 
         pdf_vals=get_sample_pdf(gt_xyz)
         #exit()
@@ -352,7 +358,9 @@ for epoch in range(config.epochs):
 
         #exit()
         with accelerator.autocast():
-            pred_noise,distogram_pred=model(sequence,noised_xyz,time_steps,config.trunk_grad,N_cycle)#.squeeze()
+            pred_noise,distogram_pred=model(sequence,noised_xyz,
+                                            time_steps,config.trunk_grad,
+                                            N_cycle,res_ids=res_ids)#.squeeze()
         #pred_xyz=aug_xyz[:,1:-1]+pred_displacements[:,1:-1]
         #exit()
 

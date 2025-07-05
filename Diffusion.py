@@ -175,7 +175,7 @@ class finetuned_RibonanzaNet(RibonanzaNet):
         distance_features=distance_features+self.pair_distance_mlp2(distance_features)
         return distance_features
 
-    def get_embeddings(self, src,src_mask=None,return_aw=False):
+    def get_embeddings(self, src,src_mask=None,return_aw=False,res_ids=None):
         B,L=src.shape
         src = src
         src = self.encoder(src).reshape(B,L,-1)
@@ -184,10 +184,10 @@ class finetuned_RibonanzaNet(RibonanzaNet):
         if self.use_gradient_checkpoint:
             #print("using grad checkpointing")
             pairwise_features=checkpoint.checkpoint(self.custom(self.outer_product_mean), src, use_reentrant=False)
-            pairwise_features=pairwise_features+self.pos_encoder(src)
+            pairwise_features=pairwise_features+self.pos_encoder(src,res_ids)
         else:
             pairwise_features=self.outer_product_mean(src)
-            pairwise_features=pairwise_features+self.pos_encoder(src)
+            pairwise_features=pairwise_features+self.pos_encoder(src,res_ids)
 
 
         #attention_weights=[]
@@ -218,11 +218,12 @@ class finetuned_RibonanzaNet(RibonanzaNet):
             return all_sequence_features, all_pairwise_features
 
 
-    def get_conditioning(self,src,cycles,trunk_grad=False):
+    def get_conditioning(self,src,cycles,trunk_grad=False,res_ids=None):
         
         #print(f'Get conditioning with trunk_grad={trunk_grad} and cycles={cycles}')
         with torch.set_grad_enabled(trunk_grad):
-            all_sequence_features, all_pairwise_features=self.get_embeddings(src, torch.ones_like(src).long().to(src.device))
+            all_sequence_features, all_pairwise_features=self.get_embeddings(src, torch.ones_like(src).long().to(src.device),
+            res_ids=res_ids)
             #print(f'Got embeddings with shape {all_sequence_features.shape} and {all_pairwise_features.shape}')
             #exit()
 
@@ -294,9 +295,9 @@ class finetuned_RibonanzaNet(RibonanzaNet):
         
         return tgt, pairwise_features
 
-    def forward(self,src,xyz,t, trunk_grad, N_cycle=4):
+    def forward(self,src,xyz,t, trunk_grad, N_cycle=4,res_ids=None):
         
-        sequence_features, pairwise_features=self.get_conditioning(src,N_cycle,trunk_grad)
+        sequence_features, pairwise_features=self.get_conditioning(src,N_cycle,trunk_grad,res_ids=res_ids)
 
         distogram=self.distogram_predictor(pairwise_features)
 

@@ -454,13 +454,16 @@ class relpos(nn.Module):
         super(relpos, self).__init__()
         self.linear = nn.Linear(33, dim)
 
-    def forward(self, src):
+    def forward(self, src,res_ids=None):
         L=src.shape[1]
-        res_id = torch.arange(L).to(src.device).unsqueeze(0)
-        device = res_id.device
+        if res_ids is None:
+            res_ids = torch.arange(L).to(src.device).unsqueeze(0)
+
+        #print(res_ids.shape)
+        device = res_ids.device
         bin_values = torch.arange(-16, 17, device=device)
         #print((bin_values))
-        d = res_id[:, :, None] - res_id[:, None, :]
+        d = res_ids[:, :, None] - res_ids[:, None, :]
         bdy = torch.tensor(16, device=device)
         d = torch.minimum(torch.maximum(-bdy, d), bdy)
         d_onehot = (d[..., None] == bin_values).float()
@@ -623,7 +626,7 @@ class RibonanzaNet(nn.Module):
         else:
             return output
 
-    def get_embeddings(self, src,src_mask=None,return_aw=False):
+    def get_embeddings(self, src,src_mask=None,return_aw=False,res_ids=None):
         B,L=src.shape
         src = src
         src = self.encoder(src).reshape(B,L,-1)
@@ -635,10 +638,10 @@ class RibonanzaNet(nn.Module):
         if self.use_gradient_checkpoint:
             #print("using grad checkpointing")
             pairwise_features=checkpoint.checkpoint(self.custom(self.outer_product_mean), src, use_reentrant=False)
-            pairwise_features=pairwise_features+self.pos_encoder(src)
+            pairwise_features=pairwise_features+self.pos_encoder(src, res_ids)
         else:
             pairwise_features=self.outer_product_mean(src)
-            pairwise_features=pairwise_features+self.pos_encoder(src)
+            pairwise_features=pairwise_features+self.pos_encoder(src, res_ids)
         # print(pairwise_features.shape)
         # exit()
 
