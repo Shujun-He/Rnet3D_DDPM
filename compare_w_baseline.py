@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 start_epoch=5
 df1 = pd.read_csv("logs/recycle_256.yaml_log.csv").loc[start_epoch:]
 
-df2 = pd.read_csv("../test82/logs/recycle_256.yaml_log.csv").loc[start_epoch:]
+df2 = pd.read_csv("../test84/logs/recycle_256.yaml_log.csv").loc[start_epoch:]
 
 
 # Create subplots

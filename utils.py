@@ -10,6 +10,17 @@ import re
 
 from torch.optim.lr_scheduler import _LRScheduler
 
+def normal_pdf(x: torch.Tensor,
+               mean: float = 0.0,
+               std: float  = 1.0) -> torch.Tensor:
+    """
+    Probability density function of a normal distribution.
+    """
+    var = std ** 2
+    denom = (2 * 3.1415 * var)**0.5
+    num   = torch.exp(- (x - mean) ** 2 / (2 * var))
+    return num / denom
+
 def spatial_crop(xyz: np.ndarray, 
                  resids: np.ndarray,
                  token_center_mask: np.ndarray = None, 

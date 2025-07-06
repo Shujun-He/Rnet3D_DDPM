@@ -51,11 +51,13 @@ os.system('mkdir weights')
 # In[2]:
 #os.environ["CUDA_VISIBLE_DEVICES"] = "0"  
 
+config=load_config_from_yaml(args.config)
+
 
 #set seed for everything
-torch.manual_seed(0)
-np.random.seed(0)
-random.seed(0)
+torch.manual_seed(config.seed)
+np.random.seed(config.seed)
+random.seed(config.seed)
 
 
 # # Config
@@ -64,7 +66,6 @@ random.seed(0)
 
 
 
-config=load_config_from_yaml(args.config)
 
 model=finetuned_RibonanzaNet(load_config_from_yaml("pairwise.yaml"),config,pretrained=True)#.cuda()
 
@@ -299,7 +300,7 @@ best_val_loss=99999999999
 total_steps=0
 
 x = torch.linspace(0, 1, config.n_times)
-pdf_vals = normal_pdf(x, 0.5, 0.1)
+pdf_vals = normal_pdf(x, config.sampling_center, config.pdf_std)
 pdf_vals = pdf_vals / pdf_vals.max()  # Normalize the PDF 
 pdf_vals = pdf_vals.to(accelerator.device).float()
 
@@ -324,7 +325,7 @@ for epoch in range(config.epochs):
         L=sequence.shape[1]
         res_ids=batch['res_ids']
 
-        pdf_vals=get_sample_pdf(gt_xyz)
+        #pdf_vals=get_sample_pdf(gt_xyz)
         #exit()
         
 
