@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch
 from utils import random_rotation_point_cloud_torch_batch
 from Network import *
-
+from all_atom_module import AllAtomEncoder, AllAtomDecoder
 
 class finetuned_RibonanzaNet(RibonanzaNet):
     def __init__(self, rnet_config, config, pretrained=False):
@@ -151,6 +151,15 @@ class finetuned_RibonanzaNet(RibonanzaNet):
 
         self.adaptor=nn.Linear(rnet_config.ninp,config.decoder_dim,bias=False)
 
+        self.all_atom_encoder = AllAtomEncoder()
+        self.all_atom_upsample = nn.Sequential(nn.LayerNorm(128),
+                                               nn.Linear(128, config.decoder_dim))
+
+        self.all_atom_decoder = AllAtomDecoder()
+
+        self.tgt_downsample = nn.Sequential(nn.LayerNorm(config.decoder_dim),
+                                            nn.Linear(config.decoder_dim, 128))
+
     def custom(self, module):
         def custom_forward(*inputs):
             inputs = module(*inputs)
@@ -277,7 +286,9 @@ class finetuned_RibonanzaNet(RibonanzaNet):
         return sequence_features,pairwise_features
 
     def get_decoder_features(self, sequence_features, pairwise_features, xyz, t):
-        decoder_batch_size=xyz.shape[0]
+        decoder_batch_size=len(t)
+        # print(t.shape)
+        # exit()
         sequence_features=sequence_features.repeat(decoder_batch_size,1,1)
         
 
@@ -295,19 +306,40 @@ class finetuned_RibonanzaNet(RibonanzaNet):
         
         return tgt, pairwise_features
 
-    def forward(self,src,xyz,t, trunk_grad, N_cycle=4,res_ids=None):
+    def forward(self,src,t, 
+                all_atom_index, all_atom_xyz, all_atom_res_index,
+                trunk_grad, N_cycle=4,res_ids=None):
+        
         
         sequence_features, pairwise_features=self.get_conditioning(src,N_cycle,trunk_grad,res_ids=res_ids)
-
         distogram=self.distogram_predictor(pairwise_features)
 
-        sequence_features, pairwise_features=self.get_decoder_features(sequence_features, pairwise_features, xyz, t)
 
-        tgt=self.adaptor(sequence_features)
+        xyz = self.denoise(sequence_features,pairwise_features,t,
+                all_atom_index, all_atom_xyz, all_atom_res_index)
 
-        # print(tgt.shape)
-        # print(sequence_features.shape)
-        # exit()
+        return xyz, distogram
+    
+
+    def denoise(self,sequence_features,pairwise_features,t,
+                all_atom_index, all_atom_xyz, all_atom_res_index):
+        
+        L = sequence_features.shape[1]
+        # all_atom_representation, all_atom_conditioning, local_attention_pair_rep, inverse_pair_distance, local_attention_pair_mask=\
+        #     self.all_atom_encoder(sequence_features, pairwise_features, all_atom_index, all_atom_xyz, all_atom_res_index)
+
+        # avg_all_atom_representation = torch.stack([all_atom_representation[:,all_atom_res_index[0] == i].mean(dim=1) for i in range(L)], 1) 
+
+        c1_indices = all_atom_index.squeeze() % 30 == 5
+        c1_xyz = all_atom_xyz[:,c1_indices]#.reshape(config.decoder_batch_size, -1, 3)
+
+        #tgt = tgt +self.xyz_norm(self.xyz_embedder(c1_xyz))
+
+        sequence_features, pairwise_features=self.get_decoder_features(sequence_features, pairwise_features, c1_xyz, t)
+
+        tgt=self.adaptor(sequence_features)#+self.all_atom_upsample(avg_all_atom_representation)
+
+
 
         for layer in self.structure_module:
             #tgt=layer([tgt, sequence_features,pairwise_features,xyz,None])
@@ -318,26 +350,18 @@ class finetuned_RibonanzaNet(RibonanzaNet):
             # xyzs.append(xyz)
             #print(sequence_features.shape)
         
-        xyz=self.xyz_predictor(tgt).squeeze(0)
-        #.squeeze(0)
+        xyz = self.xyz_predictor(tgt).squeeze(0)
+        return xyz
 
-        return xyz, distogram
-    
+        tgt = self.tgt_downsample(tgt)
 
-    def denoise(self,sequence_features,pairwise_features,xyz,t):
-        
-        sequence_features, pairwise_features=self.get_decoder_features(sequence_features, pairwise_features, xyz, t)
+        all_atom_representation = all_atom_representation + tgt[:, all_atom_res_index[0]]
 
-        tgt=self.adaptor(sequence_features)
-
-        for layer in self.structure_module:
-            tgt=layer([tgt, sequence_features,pairwise_features,None])
-            # xyz=xyz+self.xyz_predictor(sequence_features).squeeze(0)
-            # xyzs.append(xyz)
-            #print(sequence_features.shape)
-        xyz=self.xyz_predictor(tgt).squeeze(0)
-        # print(xyz.shape)
-        # exit()
+        xyz = self.all_atom_decoder(all_atom_representation,
+                                    all_atom_conditioning,
+                                    local_attention_pair_rep,
+                                    inverse_pair_distance,
+                                    local_attention_pair_mask)
         return xyz
 
 
@@ -378,21 +402,7 @@ class finetuned_RibonanzaNet(RibonanzaNet):
         return noisy_sample.detach(), epsilon
     
     
-    # def forward(self, x_zeros):
-    #     x_zeros = self.scale_to_minus_one_to_one(x_zeros)
-        
-    #     B, _, _, _ = x_zeros.shape
-        
-    #     # (1) randomly choose diffusion time-step
-    #     t = torch.randint(low=0, high=self.n_times, size=(B,)).long().to(x_zeros.device)
-        
-    #     # (2) forward diffusion process: perturb x_zeros with fixed variance schedule
-    #     perturbed_images, epsilon = self.make_noisy(x_zeros, t)
-        
-    #     # (3) predict epsilon(noise) given perturbed data at diffusion-timestep t.
-    #     pred_epsilon = self.model(perturbed_images, t)
-        
-    #     return perturbed_images, epsilon, pred_epsilon
+
     
     
     def denoise_at_t(self, x_t, sequence_features, pairwise_features, timestep, t):
@@ -502,56 +512,14 @@ class finetuned_RibonanzaNet(RibonanzaNet):
 
             x_t = 0.5 * (x_t_euler + x_t_next)
 
-            # sigma_t = eta * torch.sqrt((1 - alpha_bar_next) / (1 - alpha_bar_t) * (1 - alpha_bar_t / alpha_bar_next))
-            # # print(sigma_t)
-            # # exit()
 
-            # #x_0_heun = 0.5 * (x_0+  batched_svd_align(x_0_next, x_0))
-            # eps_avg = 0.5 * (eps1 + eps2)
-            # x_0_avg = 0.5 * (x_0 + x_0_next)
-            # x_t = torch.sqrt(alpha_bar_next) * x_0_avg + \
-            #       torch.sqrt(1 - alpha_bar_next-sigma_t**2) * eps_avg + \
-            #       sigma_t * torch.randn_like(x_t) #* torch.sqrt(1 - alpha_bar_next)
-
-
-            # # # Heun step (second-order correction)
-            # eps_avg = 0.5 * (eps1 + eps2)
-            # x_0 = (x_t - eps_avg * torch.sqrt(1 - alpha_bar_t)) / torch.sqrt(alpha_bar_t)
-            # x_t = torch.sqrt(alpha_bar_next) * x_0 + torch.sqrt(1 - alpha_bar_next) * eps_avg
-
-            # x_t = (x_t - eps1 * torch.sqrt(1 - alpha_bar_t)) / torch.sqrt(alpha_bar_t) * torch.sqrt(alpha_bar_next) + \
-            #     torch.sqrt(1 - alpha_bar_next) * eps1
-
-            
-            # # Predict noise at x_t
-            # eps1 = self.denoise(sequence_features, pairwise_features, x_t, t_curr)
-
-
-            # # Euler step
-            # scale_factor = torch.sqrt(alpha_bar_next)/torch.sqrt(alpha_bar_next)
-            # step_size = (torch.sqrt((1 - alpha_bar_next)*alpha_bar_next) / torch.sqrt(alpha_bar_t) + torch.sqrt(1 - alpha_bar_next))
-
-            #x_t_euler = x_t * scale_factor - eps1 * step_size
-
-            #x_t = x_t_euler
-
-            #if stochastic:
-            #sigma_t = eta * torch.sqrt((1 - alpha_prev) / (1 - alpha_t) * (1 - alpha_t/alpha_prev))
-            # sigma_t = eta * torch.sqrt((1 - alpha_bar_next) / (1 - alpha_bar_t) * (1 - alpha_bar_t / alpha_bar_next))
-            # x_t_euler = x_t * scale_factor - eps1 * step_size + torch.randn_like(x_t) * sigma_t
-
-            # #grad1 = eps1 * step_size / scale_factor
-            # x_t_euler = batched_svd_align(x_t_euler, x_t)
-            # eps2 = self.denoise(sequence_features, pairwise_features, x_t_euler, t_next_tensor)
-            # eps_avg = 0.5 * (eps1 + eps2)
-            # x_t = x_t * scale_factor - eps_avg * step_size + torch.randn_like(x_t) * sigma_t
 
         x_0 = x_t * self.data_std
         return x_0, distogram       
 
 
 
-    def sample_euler(self, src, N, num_steps=None, eta=0.0, N_cycle=4):
+    def sample_euler(self, src, N, all_atom_index, all_atom_res_index, num_steps=None, eta=0.0, N_cycle=4):
         """
         Heun's method sampler with optional fewer steps (coarse stepping).
         
@@ -561,8 +529,9 @@ class finetuned_RibonanzaNet(RibonanzaNet):
             num_steps (int, optional): Number of timesteps to sample with. If None, uses full DDPM schedule.
         """
         device = src.device
-        x_t = torch.randn((N, src.shape[1], 3)).to(device)
-
+        x_t = torch.randn((N, all_atom_index.shape[1], 3)).to(device)
+        # print(x_t.shape)
+        # exit()
         # Get conditioning
         with torch.no_grad():
             sequence_features, pairwise_features=self.get_conditioning(src,N_cycle)
@@ -587,7 +556,7 @@ class finetuned_RibonanzaNet(RibonanzaNet):
             alpha_bar_next = self.extract(self.sqrt_alpha_bars.to(device), t_next_tensor, x_t.shape) ** 2
 
             # Predict noise at x_t
-            eps1 = self.denoise(sequence_features, pairwise_features, x_t, t_curr)
+            eps1 = self.denoise(sequence_features, pairwise_features, t_curr, all_atom_index, x_t, all_atom_res_index)
 
 
             # Euler step

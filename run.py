@@ -73,9 +73,10 @@ model=finetuned_RibonanzaNet(load_config_from_yaml("pairwise.yaml"),config,pretr
 
 
 #save to pickle
-with open("../train_data.pkl", "rb") as f:
+with open("../fixed_deduped_pdb_xyz_data.pkl", "rb") as f:
     data = pickle.load(f)
-
+    data['temporal_cutoff'] = data['publication_date']
+#exit()
 # # Split train data into train/val/test¶
 # We will simply do a temporal split, because that's how testing is done in structural biology in general (in actual blind tests)
 
@@ -137,6 +138,32 @@ class RNA3D_Dataset(Dataset):
     def __len__(self):
         return len(self.indices)
     
+    def get_all_atom_data(self, sequence, xyz, res_ids):
+        all_atom_index=[]
+        all_atom_xyz=[]
+        all_atom_res_index=[]
+        for i in range(len(sequence)):
+            nt=sequence[i]
+            res_xyz = xyz[i]['all']
+            n_atoms = len(res_xyz)
+
+            all_atom_index.append(nt*30 + np.arange(n_atoms))
+            all_atom_xyz.append(res_xyz)
+            all_atom_res_index.append([i]*n_atoms)
+
+            #print(len(res_xyz))
+
+        all_atom_index=np.concatenate(all_atom_index)
+        all_atom_xyz=np.concatenate(all_atom_xyz)
+        all_atom_res_index=np.concatenate(all_atom_res_index)   
+
+        #convert to torch tensors
+        all_atom_index=torch.tensor(all_atom_index, dtype=torch.long)
+        all_atom_xyz=torch.tensor(all_atom_xyz, dtype=torch.float32)
+        all_atom_res_index=torch.tensor(all_atom_res_index, dtype=torch.long)
+
+        return all_atom_index, all_atom_xyz, all_atom_res_index  
+
     def __getitem__(self, idx):
 
         idx=self.indices[idx]
@@ -146,33 +173,58 @@ class RNA3D_Dataset(Dataset):
 
         #get C1' xyz
         xyz=self.data['xyz'][idx]
-        xyz=torch.tensor(np.array(xyz))
+        #xyz=torch.tensor(np.array(xyz))
         res_ids=np.arange(len(xyz))
+        #all_atom_index, all_atom_xyz, all_atom_res_index  = self.get_all_atom_data(sequence, xyz, res_ids)
+        c1_xyz = np.array([x['all'][5] for x in xyz])
+        c1_xyz = torch.tensor(c1_xyz, dtype=torch.float32)
 
         if self.training:
             if len(sequence)>self.max_len:
 
-                if np.random.rand()<0.25: 
+                if np.random.rand()<0.25:
                     crop_start=np.random.randint(len(sequence)-self.max_len)
                     crop_end=crop_start+self.max_len
 
                     sequence=sequence[crop_start:crop_end]
                     xyz=xyz[crop_start:crop_end]
                     res_ids=res_ids[crop_start:crop_end]
+                    
+                    all_atom_index, all_atom_xyz, all_atom_res_index  = self.get_all_atom_data(sequence, xyz, res_ids)
+
+                    c1_xyz = c1_xyz[res_ids]
+
                 else:
-                    xyz, res_ids=spatial_crop(xyz,res_ids,crop_size=self.max_len)
+                    
+
+
+                    # print(c1_xyz.shape)
+                    # print(res_ids.shape)
+                    # exit()
+                    _,res_ids=spatial_crop(c1_xyz,res_ids,crop_size=self.max_len)
                     sequence=sequence[res_ids]
+
+                    all_atom_index, all_atom_xyz, all_atom_res_index  = self.get_all_atom_data(sequence, xyz, res_ids)
+                    c1_xyz = c1_xyz[res_ids]
+
+            else:
+                all_atom_index, all_atom_xyz, all_atom_res_index  = self.get_all_atom_data(sequence, xyz, res_ids)        
         else:
             if len(sequence)>self.max_len:
                 sequence=sequence[:self.max_len]
                 xyz=xyz[:self.max_len]
                 res_ids=res_ids[:self.max_len]
+                c1_xyz = c1_xyz[:self.max_len]
 
+            all_atom_index, all_atom_xyz, all_atom_res_index  = self.get_all_atom_data(sequence, xyz, res_ids)       
 
 
         return {'sequence':sequence,
-                'xyz':xyz,
-                'res_ids':res_ids,}
+                'xyz':c1_xyz,
+                'res_ids':res_ids,
+                'all_atom_index':all_atom_index,
+                'all_atom_xyz':all_atom_xyz,
+                'all_atom_res_index':all_atom_res_index,}
 
 
 
@@ -182,7 +234,18 @@ class RNA3D_Dataset(Dataset):
 train_dataset=RNA3D_Dataset(train_index,data,config.max_len, training=True)
 val_dataset=RNA3D_Dataset(test_index,data,config.val_max_len)
 
-
+# for i in range(len(train_dataset)):
+#     d = train_dataset[i]
+#     # print(f"Sequence: {d['sequence']
+#     # print(train_dataset[i]['sequence'].shape)
+#     #print shapes
+#     print(f"Sequence shape: {d['sequence'].shape}")
+#     print(f"XYZ shape: {d['xyz'].shape}")
+#     print(f"Res IDs shape: {d['res_ids'].shape}")
+#     print(f"All atom index shape: {d['all_atom_index'].shape}")
+#     print(f"All atom xyz shape: {d['all_atom_xyz'].shape}")
+#     #print(f"All atom res index shape: {d['all_atom_res_index'].shape)}")
+# exit()
 # In[14]:
 
 
@@ -320,11 +383,18 @@ for epoch in range(config.epochs):
         #try:
         sequence=batch['sequence']#.cuda()
         gt_xyz=batch['xyz'].squeeze()
-        mask=~torch.isnan(gt_xyz)
+        
 
         L=sequence.shape[1]
         res_ids=batch['res_ids']
 
+        all_atom_index=batch['all_atom_index']
+        all_atom_xyz=batch['all_atom_xyz']
+        all_atom_res_index=batch['all_atom_res_index']
+
+        #mask=~torch.isnan(all_atom_xyz)
+        mask=~torch.isnan(gt_xyz)
+        #exit()
         #pdf_vals=get_sample_pdf(gt_xyz)
         #exit()
         
@@ -334,8 +404,11 @@ for epoch in range(config.epochs):
         distance_matrix=distance_matrix.clip(2,39).long()
         #print(distogram_mask.float().mean())
         gt_xyz[torch.isnan(gt_xyz)]=0
+        all_atom_xyz[torch.isnan(all_atom_xyz)]=0
 
         gt_xyz=gt_xyz.unsqueeze(0).repeat(config.decoder_batch_size,1,1)
+        all_atom_xyz=all_atom_xyz.repeat(config.decoder_batch_size,1,1)
+        #all_atom_res_index=all_atom_res_index.repeat(config.decoder_batch_size,1)
         #time_steps=torch.randint(0,config.n_times,size=(gt_xyz.shape[0],)).to(gt_xyz.device)
         #select time steps with torch multinomial based  on pdf_vals
         
@@ -348,10 +421,18 @@ for epoch in range(config.epochs):
         # exit()
         #loss_weight=(1.1-time_steps/config.n_times)
         if accelerator.distributed_type=='NO':
-            noised_xyz, noise=model.make_noisy(gt_xyz, time_steps)
+            all_atom_noised_xyz, all_atom_noise=model.make_noisy(all_atom_xyz, time_steps)
         else:
-            noised_xyz, noise=model.module.make_noisy(gt_xyz, time_steps)
+            all_atom_noised_xyz, all_atom_noise=model.module.make_noisy(all_atom_xyz, time_steps)
 
+
+        # gather all_atom_index%30 == 5
+        c1_indices = all_atom_index.squeeze() % 30 == 5
+        noised_xyz = all_atom_noised_xyz[:,c1_indices]#.reshape(config.decoder_batch_size, -1, 3)
+        noise = all_atom_noise[:,c1_indices]
+
+        # print(noised_xyz.shape)
+        # exit()
         N_cycle=np.random.randint(1,config.max_cycles+1)
         #print(N_cycle)
         if accelerator.distributed_type!='NO':
@@ -359,8 +440,9 @@ for epoch in range(config.epochs):
 
         #exit()
         with accelerator.autocast():
-            pred_noise,distogram_pred=model(sequence,noised_xyz,
-                                            time_steps,config.trunk_grad,
+            pred_noise,distogram_pred=model(sequence,time_steps,
+                                            all_atom_index, all_atom_xyz, all_atom_res_index,
+                                            config.trunk_grad,
                                             N_cycle,res_ids=res_ids)#.squeeze()
         #pred_xyz=aug_xyz[:,1:-1]+pred_displacements[:,1:-1]
         #exit()
@@ -428,19 +510,29 @@ for epoch in range(config.epochs):
         sequence=batch['sequence'].cuda()
         gt_xyz=batch['xyz'].cuda().squeeze()
 
+        L=sequence.shape[1]
+        res_ids=batch['res_ids']
+
+        all_atom_index=batch['all_atom_index']
+        all_atom_xyz=batch['all_atom_xyz'].squeeze()
+        all_atom_res_index=batch['all_atom_res_index']
+
+
+
         with torch.no_grad():
             # if accelerator.dis
             #pred_xyz=model.module.decode(sequence,torch.ones_like(sequence).long().cuda()).squeeze()
             with accelerator.autocast():
                 if accelerator.distributed_type=='NO':
-                    pred_xyz=model.sample_euler(sequence,1,config.val_n_steps,N_cycle=config.max_cycles)[0].squeeze(0)
+                    pred_xyz=model.sample_euler(sequence,1,all_atom_index, all_atom_res_index,config.val_n_steps,N_cycle=config.max_cycles)[0].squeeze(0)
                 else:
-                    pred_xyz=model.module.sample_euler(sequence,1,config.val_n_steps,N_cycle=config.max_cycles)[0].squeeze(0)
+                    pred_xyz=model.module.sample_euler(sequence,1,all_atom_index, all_atom_res_index,config.val_n_steps,N_cycle=config.max_cycles)[0].squeeze(0)
             #pred_xyz=model(sequence)[-1].squeeze()
-            loss=dRMAE(pred_xyz,pred_xyz,gt_xyz,gt_xyz)
+            loss=dRMAE(pred_xyz,pred_xyz,all_atom_xyz,all_atom_xyz)
+            #loss=0
 
-        val_rmsd+=accelerator.gather(align_svd_rmsd(pred_xyz,gt_xyz)).mean().item()
-        val_lddt+=accelerator.gather(torch.tensor(compute_lddt(pred_xyz.cpu().numpy(),gt_xyz.cpu().numpy())).to(pred_xyz.device)).mean().item()
+        val_rmsd+=accelerator.gather(align_svd_rmsd(pred_xyz,all_atom_xyz)).mean().item()
+        val_lddt+=accelerator.gather(torch.tensor(compute_lddt(pred_xyz.cpu().numpy(),all_atom_xyz.cpu().numpy())).to(pred_xyz.device)).mean().item()
         val_loss+=accelerator.gather(loss).mean().item()
 
         val_preds.append([gt_xyz.cpu().numpy(),pred_xyz.cpu().numpy()])
